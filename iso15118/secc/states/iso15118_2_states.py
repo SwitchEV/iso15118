@@ -6,7 +6,7 @@ SessionStopReq.
 
 import logging
 import time
-from typing import List, Optional, Type, Union
+from typing import Dict, List, Optional, Type, Union
 
 from iso15118.secc.comm_session_handler import SECCCommunicationSession
 from iso15118.secc.controller.interface import EVChargeParamsLimits
@@ -83,6 +83,7 @@ from iso15118.shared.messages.iso15118_2.datatypes import (
     ACEVSEChargeParameter,
     ACEVSEStatus,
     AuthOptionList,
+    Certificate,
     CertificateChain,
     ChargeProgress,
     ChargeService,
@@ -111,7 +112,9 @@ from iso15118.shared.security import (
     CertPath,
     KeyEncoding,
     KeyPath,
+    certificate_to_pem_string,
     create_signature,
+    derive_certificate_hash_data,
     encrypt_priv_key,
     get_cert_cn,
     get_random_bytes,
@@ -765,6 +768,49 @@ class PaymentDetails(StateSECC):
     def __init__(self, comm_session: SECCCommunicationSession):
         super().__init__(comm_session, Timeouts.V2G_SECC_SEQUENCE_TIMEOUT)
 
+    def _all_certificates_from_chain(
+        self, certificate_chain: CertificateChain
+    ) -> List[Certificate]:
+        """Return all certificates from a certificate chain as a list.
+
+        The order should be: leaf certificate, sub-CA 2, sub-CA 1,
+        if all three are present.
+        """
+        return [
+            certificate_chain.certificate
+        ] + certificate_chain.sub_certificates.certificates
+
+    def _get_contract_certificate_hash_data(
+        self,
+        certificate_chain: Optional[CertificateChain],
+    ) -> Optional[List[Dict[str, str]]]:
+        """Return a list of hash data for a contract certificate chain."""
+        if certificate_chain is not None:
+            return None
+
+        return [
+            derive_certificate_hash_data(certificate)
+            for certificate in self._all_certificates_from_chain(certificate_chain)
+        ]
+
+    def _build_pem_certificate_chain(
+        self, certificate_chain: Optional[CertificateChain]
+    ) -> Optional[str]:
+        """Return a string of certificates in PEM form concatenated together."""
+        if certificate_chain is None:
+            return None
+
+        return "".join(
+            [
+                certificate_to_pem_string(certificate)
+                for certificate in self._all_certificates_from_chain(certificate_chain)
+            ]
+        )
+
+    def _mobility_operator_root_cert_path(self) -> str:
+        """Return the path to the MO root.  Included to be patched in tests."""
+        return CertPath.MO_ROOT_DER
+
     async def process_message(
         self,
         message: Union[
@@ -791,24 +837,57 @@ class PaymentDetails(StateSECC):
             # TODO Either an MO Root certificate or a V2G Root certificate
             #      could be used to verify, need to be flexible with regards
             #      to the PKI that is used.
-            verify_certs(leaf_cert, sub_ca_certs, CertPath.MO_ROOT_DER)
+            verify_certs(
+                leaf_cert, sub_ca_certs, self._mobility_operator_root_cert_path()
+            )
 
-            # TODO Check if EMAID has correct syntax
-
+            # TODO Check if EMAID has correct syntax -- is this accomplished by the
+            # constrained type in `datatypes.py`?
+            self.comm_session.emaid = payment_details_req.emaid
             self.comm_session.contract_cert_chain = payment_details_req.cert_chain
 
-            payment_details_res = PaymentDetailsRes(
-                response_code=ResponseCode.OK,
-                gen_challenge=get_random_bytes(16),
-                evse_timestamp=time.time(),
+            hash_data = self._get_contract_certificate_hash_data(
+                self.comm_session.contract_cert_chain
+            )
+            pem_certificate_chain = self._build_pem_certificate_chain(
+                self.comm_session.contract_cert_chain
             )
 
-            self.create_next_message(
-                Authorization,
-                payment_details_res,
-                Timeouts.V2G_SECC_SEQUENCE_TIMEOUT,
-                Namespace.ISO_V2_MSG_DEF,
+            authorization_result = (
+                await self.comm_session.evse_controller.is_authorized(
+                    id_token=payment_details_req.emaid,
+                    id_token_type=self.comm_session.selected_auth_option,
+                    certificate_chain=pem_certificate_chain,
+                    hash_data=hash_data,
+                )
             )
+
+            if authorization_result == AuthorizationStatus.ACCEPTED:
+
+                payment_details_res = PaymentDetailsRes(
+                    response_code=ResponseCode.OK,
+                    gen_challenge=get_random_bytes(16),
+                    evse_timestamp=time.time(),
+                )
+
+                self.create_next_message(
+                    Authorization,
+                    payment_details_res,
+                    Timeouts.V2G_SECC_SEQUENCE_TIMEOUT,
+                    Namespace.ISO_V2_MSG_DEF,
+                )
+            else:
+                # TODO: handle ONGOING case, and REJECTED more fully
+                payment_details_res = PaymentDetailsRes(
+                    response_code=ResponseCode.FAILED,
+                    evse_timestamp=time.time(),
+                )
+                self.stop_state_machine(
+                    "Authorization failed",
+                    payment_details_res,
+                    ResponseCode.FAILED,
+                )
+
         except (
             CertSignatureError,
             CertNotYetValidError,
@@ -930,9 +1009,17 @@ class Authorization(StateSECC):
         # self.comm_session.contract_cert_chain attribute.
         auth_status: EVSEProcessing = EVSEProcessing.ONGOING
         next_state: Type["State"] = Authorization
-        if await self.comm_session.evse_controller.is_authorized() == (
-            AuthorizationStatus.ACCEPTED
-        ):
+        # TODO: how should we obtain/hold the token for EIM?  Other cases?
+        id_token = (
+            self.comm_session.emaid
+            if self.comm_session.selected_auth_option == AuthEnum.PNC_V2
+            else None
+        )
+        authorization_result = await self.comm_session.evse_controller.is_authorized(
+            id_token=id_token,
+            id_token_type=self.comm_session.selected_auth_option,
+        )
+        if authorization_result == AuthorizationStatus.ACCEPTED:
             auth_status = EVSEProcessing.FINISHED
             next_state = ChargeParameterDiscovery
 

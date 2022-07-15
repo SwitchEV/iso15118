@@ -1,3 +1,4 @@
+from pathlib import Path
 from typing import List
 
 from iso15118.shared.messages.datatypes import (
@@ -11,12 +12,14 @@ from iso15118.shared.messages.iso15118_2.body import (
     AuthorizationReq,
     Body,
     ChargeParameterDiscoveryReq,
+    PaymentDetailsReq,
     PowerDeliveryReq,
     SessionStopReq,
     WeldingDetectionReq,
 )
 from iso15118.shared.messages.iso15118_2.datatypes import (
     ACEVChargeParameter,
+    CertificateChain,
     ChargeProgress,
     ChargingSession,
     DCEVErrorCode,
@@ -28,6 +31,7 @@ from iso15118.shared.messages.iso15118_2.datatypes import (
     SalesTariff,
     SalesTariffEntry,
     SAScheduleTuple,
+    SubCertificates,
 )
 from iso15118.shared.messages.iso15118_2.header import MessageHeader
 from iso15118.shared.messages.iso15118_2.msgdef import V2GMessage
@@ -122,6 +126,31 @@ def get_dummy_v2g_message_authorization_req():
     return V2GMessage(
         header=MessageHeader(session_id=MOCK_SESSION_ID),
         body=Body(authorization_req=authorization_req),
+    )
+
+
+def get_dummy_v2g_message_payment_details_req() -> V2GMessage:
+    root_dir = Path(__file__).parent.parent.parent
+    cert_dir = root_dir / "sample_certs"
+    with open(cert_dir / "contractLeafCert.der", "rb") as leaf_file:
+        leaf_certificate = leaf_file.read()
+    with open(cert_dir / "moSubCA1Cert.der", "rb") as sub_ca_1_file:
+        sub_ca_1_certificate = sub_ca_1_file.read()
+    with open(cert_dir / "moSubCA2Cert.der", "rb") as sub_ca_2_file:
+        sub_ca_2_certificate = sub_ca_2_file.read()
+
+    payment_details_req = PaymentDetailsReq(
+        emaid="1234567890abcd",
+        cert_chain=CertificateChain(
+            certificate=leaf_certificate,
+            sub_certificates=SubCertificates(
+                certificates=[sub_ca_2_certificate, sub_ca_1_certificate],
+            ),
+        ),
+    )
+    return V2GMessage(
+        header=MessageHeader(session_id=MOCK_SESSION_ID),
+        body=Body(payment_details_req=payment_details_req),
     )
 
 
