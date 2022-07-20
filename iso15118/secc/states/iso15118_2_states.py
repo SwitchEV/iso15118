@@ -1280,10 +1280,6 @@ class PowerDelivery(StateSECC):
             # after sending the first PowerDeliveryReq with ChargeProgress equals
             # "Start" within V2G Communication SessionPowerDeliveryReq.
 
-            # [V2G2-860] - If no error is detected, the SECC shall close the Contactor
-            # no later than 3s after measuring CP State C or D.
-            # Before closing the contactor, we need to check to
-            # ensure the CP is in state C or D
             cp_state = await self.comm_session.evse_controller.get_cp_state()
             if cp_state not in [CpState.C2, CpState.D2]:
                 logger.info(
@@ -1303,7 +1299,10 @@ class PowerDelivery(StateSECC):
                         ResponseCode.FAILED,
                     )
                     return
-
+            # [V2G2-860] - If no error is detected, the SECC shall close the Contactor
+            # no later than 3s after measuring CP State C or D.
+            # Before closing the contactor, we need to check to
+            # ensure the CP is in state C or D
             contactor_state = await self.comm_session.evse_controller.close_contactor()
             if contactor_state != Contactor.CLOSED:
                 self.stop_state_machine(
