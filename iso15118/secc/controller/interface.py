@@ -2,7 +2,6 @@
 This module contains the abstract class for an SECC to retrieve data from the EVSE
 (Electric Vehicle Supply Equipment).
 """
-
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import List, Optional
@@ -28,6 +27,7 @@ from iso15118.shared.messages.din_spec.datatypes import (
 from iso15118.shared.messages.enums import (
     AuthorizationStatus,
     Contactor,
+    CpState,
     EnergyTransferModeEnum,
     Protocol,
 )
@@ -303,6 +303,16 @@ class EVSEControllerInterface(ABC):
             is_ongoing (bool): whether hlc charging is ongoing or not.
         Relevant for:
         - ISO 15118-2
+        """
+        raise NotImplementedError
+
+    @abstractmethod
+    async def get_cp_state(self) -> CpState:
+        """
+        Returns current cp state
+
+        Relevant for:
+        - IEC 61851-1
         """
         raise NotImplementedError
 
